@@ -1,5 +1,15 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 * linguist-vendored
-*.html linguist-detectable=false
-*.Rmd linguist-language=R
+
+*.Rdata binary
+*.RData binary
+*.rda   binary
+*.rdb   binary
+*.rds   binary
+*.Rd    text
+*.Rdx   binary
+*.Rmd	  text
+*.R  	  text
+*.Rproj text
+*.[Rr]md   linguist-detectable
