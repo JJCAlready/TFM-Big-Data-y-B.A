@@ -1,0 +1,352 @@
+---
+title: "Preprocesamiento de datos de fabricación"
+author: "Jorge Custodio"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+```{r}
+library("ggplot2")
+library("forecast")
+library("dplyr")
+library("jsonlite")
+library("tidyverse")
+library("corrplot")
+library("fastDummies")
+library("glmnet")
+library("MASS")
+
+
+pedidos <- read.csv("data/pedidos.csv", sep = ",")
+materiales <- read.csv("data/materiales.csv", sep = ",")
+almacen <- read.csv("data/almacen.csv", sep = ",")
+recetas <- as.data.frame(unnest(fromJSON("data/recetas.json"), cols = c(materiales, cantidades)))
+
+
+
+```
+
+1- Necesitamos integrar los 3 CSV en 2 dataframes
+
+A - El primero deberá integrar los pedidos con las recetas y almacen, transformando el id_receta en la receta en sí y multiplicando la cantidad por sus proporciones. De forma que tengamos estas columnas:
+
+      - material
+      - cantidad 
+      - fecha_pedido
+      - exceso (calculada de cantidad*exceso_pcg)
+      
+      
+
+B - El segundo deberá integrar las recetas y los materiales. De forma que tengamos estas columnas
+
+      - material
+      - cantidades
+      - fecha_precio
+      - precio_tonelada
+      - importe (calculada de cantidad*precio de material)
+
+Las columnas target son:
+
+      - De producción, la columna cantidad 
+      - De compras, la columna precio 
+Preprocesamiento
+
+```{r}
+
+# Para el primer data frame necesitamos el dataframe de los pedidos, y reemplazar id_receta por los materiales y las cantidades
+df_produccion <- merge(pedidos, recetas, by="id_receta",all = TRUE)
+
+# ahora tenemos la columna de cantidad y cantidades, la cantidad en toneladas del pedido, y las cantidades en kilos por tonelada de cada material. Hay que:
+# 1. Sustituir cantidad por su cantidad en toneladas de cada material y eliminar la columna cantidades.
+# 2. Añadir la columna exceso y su valor será el exceso_pcg*cantidad/100. Después eliminaremos exceso pcg
+# 3. Eliminar la columna id_receta.
+
+df_produccion$cantidad <- df_produccion$cantidad * (df_produccion$cantidades/1000)
+df_produccion$exceso <- df_produccion$exceso_pcg * df_produccion$cantidad / 100
+
+# formateamos las columnas
+df_produccion$fecha_pedido <- as.Date(df_produccion$fecha_pedido, format = "%d/%m/%Y")
+df_produccion$material <- as.factor(df_produccion$materiales)
+
+# limpiamos el dataframe
+df_produccion <- subset(df_produccion, select = -c(id_pedido, id_receta, cantidades, materiales, exceso_pcg))
+
+# Comprobamos si hay valores nulos
+writeLines("Número de valores nulos\n")
+sum(is.na(df_produccion))
+
+
+# con esto quedaría preparado
+
+writeLines("\nEstructura\n")
+str(df_produccion)
+writeLines("\n------------------------------------------------------\n")
+writeLines("\nDimensiones\n")
+dim(df_produccion)
+writeLines("\n------------------------------------------------------\n")
+writeLines("\nSumario\n")
+summary(df_produccion)
+head(df_produccion)
+```
+
+comprobación de compras
+
+```{r}
+# Para el segunda dataframe mergearemos df_compras con materiales
+df_compras <- recetas
+df_compras <- rename(df_compras, material = materiales)
+df_compras$material <- as.numeric(df_compras$material)
+df_compras <- merge(df_compras, materiales, by="material", all=TRUE)
+
+#formateamos las columnas
+df_compras$fecha_precio <- as.Date(df_compras$fecha_precio, format = "%d/%m/%Y")
+
+
+df_compras$material <- as.factor(df_compras$material)
+
+# ahora necesitamos:
+# 1.importe (calculada de cantidad*precio de material)
+# 2. desperdicio (calculada del (exceso*precio material))
+
+df_compras$importe <- df_compras$cantidad * df_compras$precio_tonelada
+
+# Eliminamos las columnas innecesarias
+df_compras <- subset(df_compras, select =  -c(id_receta))
+
+
+# Hay dos materiales que será innecesario predecir, ya que se usan en muy poca cantidad y su compra se realiza cada año, negociando con el proveedor. Por lo tanto los retiraremos del dataframe
+
+df_compras <- df_compras[df_compras$precio_tonelada < 1000,]
+
+
+
+# Comprobamos si hay valores nulos
+writeLines("Número de valores nulos\n")
+sum(is.na(df_compras))
+
+writeLines("\nEstructura\n")
+str(df_compras)
+writeLines("\n------------------------------------------------------\n")
+writeLines("\nDimensiones\n")
+dim(df_compras)
+writeLines("\n------------------------------------------------------\n")
+writeLines("\nSumario\n")
+summary(df_compras)
+head(df_compras)
+```
+
+Exportamos a csv
+```{r}
+write.csv(df_produccion,"data/produccion.csv", row.names = FALSE)
+write.csv(df_compras,"data/compras.csv", row.names = FALSE)
+```
+
+
+
+
+```{r}
+
+for (columna in 1:ncol(df_produccion)){
+  if (class(df_produccion[,columna]) == "factor"){
+    # Por defecto se mostrará un gráfico de barras.
+    plot(df_produccion[,columna], 
+         col = topo.colors(length(levels(df_produccion[,columna]))), # topo asigna un color diferente a cada nivel categorico distinto
+         las = 1,
+         main = paste("Diagrama de barras de: ", colnames(df_produccion[columna])))  # concatena, en este caso para añadir el titulo de la columna
+  } else if(class(df_produccion[,columna]) == "numeric" | (class(df_produccion[,columna]) == "integer")){
+    # Para las variables numéricas, histograma.
+    hist(df_produccion[, columna], 
+         border = "blue", 
+         col = "tomato", 
+         las = 1, 
+         main = paste("Histograma de: ", colnames(df_produccion[columna])),
+         xlab  = colnames(df_produccion[columna]))
+  }
+}
+
+```
+
+```{r}
+
+for (columna in 1:ncol(df_compras)){
+  if (class(df_compras[,columna]) == "factor"){
+    # Por defecto se mostrará un gráfico de barras.
+    plot(df_compras[,columna], 
+         col = topo.colors(length(levels(df_compras[,columna]))), # topo asigna un color diferente a cada nivel categorico distinto
+         las = 1,
+         main = paste("Diagrama de barras de: ", colnames(df_compras[columna])))  # concatena, en este caso para añadir el titulo de la columna
+  } else if(class(df_compras[,columna]) == "numeric" | (class(df_compras[,columna]) == "integer" & columna != "importe")){
+    # Para las variables numéricas, histograma.
+    hist(df_compras[, columna], 
+         border = "blue", 
+         col = "tomato", 
+         las = 1, 
+         main = paste("Histograma de: ", colnames(df_compras[columna])),
+         xlab  = colnames(df_compras[columna]))
+  }
+}
+
+
+```
+
+```{r}
+# Función para comprobar cada variable contra la variable objetivo
+
+outpath <- "graphs/"
+explain.target <- function(dataframe.object, target.feature, partition, tf_name){
+  for (columna in 1:ncol(dataframe.object)){
+
+    if (names(dataframe.object[columna]) == tf_name){
+      next
+      
+    } else {
+      if (class(dataframe.object[, columna]) == "factor"){
+        plot <- ggplot(dataframe.object) + 
+          geom_bar(aes(dataframe.object[, columna], fill = as.factor(target.feature))) + 
+          labs(title=paste(names(dataframe.object[columna]), "~", partition)) + 
+          xlab(names(dataframe.object[columna])) + 
+          ylab("Frecuencia") +
+          scale_fill_discrete(name=partition, breaks=c(target.feature),
+                           labels=c(target.feature))
+      
+      } else {
+        plot <- ggplot(dataframe.object) + 
+          geom_boxplot(aes(dataframe.object[, columna], fill = as.factor(target.feature))) + 
+          coord_flip() +
+          labs(title=paste(names(dataframe.object[columna]), "~", partition)) + 
+          xlab(names(dataframe.object[columna])) + 
+          scale_fill_discrete(name=partition, breaks=c(target.feature),
+                           labels=c(target.feature))
+      }
+      jpeg(paste(outpath,names(dataframe.object[columna]), "~", partition,".jpg", sep=""))
+      plot <- print(plot)
+      dev.off()
+    }
+  }
+}
+
+```
+
+```{r}
+for (lev in levels(df_produccion$material)){
+  df <-df_produccion[df_produccion$material==lev,]
+  explain.target(df, df$cantidad, lev, "cantidad")
+}
+```
+
+```{r}
+for (lev in levels(df_compras$material)){
+  df_c <-df_compras[df_compras$material==lev,]
+  explain.target(df_c, df_c$precio_tonelada, lev, "precio_tonelada")
+}
+```
+
+```{r}
+prod_numeric.values <- df_produccion %>% dplyr::select(exceso,cantidad)
+compras_numeric.values <- df_compras %>% dplyr::select(cantidades,precio_tonelada,importe)
+
+writeLines("\nComprobación de distribución de producción\n")
+sapply(sample_n(prod_numeric.values, 689), function(x) round(shapiro.test(x)$p.value,2)) # comprueba si provienen de una distribución
+writeLines("\n------------------------------------------\n")
+writeLines("\nComprobación de distribución de compras\n")
+sapply(sample_n(compras_numeric.values, 689), function(x) round(shapiro.test(x)$p.value,2)) # comprueba si provienen de una distribución 
+
+```
+
+Los valores no pertenecen a una distribución normal
+
+```{r}
+
+writeLines("\nCorrelación de valores de producción\n")
+corrplot(cor(prod_numeric.values), method = "number", type="upper")
+writeLines("\n------------------------------------------\n")
+writeLines("\nCorrelación de valores de compras\n")
+corrplot(cor(compras_numeric.values), method = "number", type="upper")
+
+
+```
+
+Las variables importe y desperdicio tienen una gran correlación dentro del dataframe, ya que ambas son calculadas a partir de otra variable.
+
+```{r}
+# Test de independencia de las variables categóricas contra la variable objetivo.
+produccion_categorical.features <- df_produccion %>% dplyr::select(material) 
+compras_categorical.features <- df_compras %>% dplyr::select(material) 
+
+
+
+writeLines("\nIndependencia de valores categóricos de producción\n")
+sapply(produccion_categorical.features, function(x) round(chisq.test(table(x, df_produccion$cantidad))$p.value,2)) 
+writeLines("\n------------------------------------------\n")
+writeLines("\nIndependencia de valores categóricos de compras\n")
+sapply(compras_categorical.features, function(x) round(chisq.test(table(x, df_compras$precio_tonelada))$p.value,2)) 
+
+```
+
+La variable categórica material es independiente en ambos dataframes.
+
+```{r}
+# Primero reordenamos los dataframes para tener la variable objetivo al final
+df_produccion <- df_produccion[, c("material", "fecha_pedido", "exceso", "cantidad")]
+df_compras <- df_compras[, c("fecha_precio", "material", "cantidades", "importe",  "precio_tonelada")]
+
+head(df_produccion)
+head(df_compras)
+```
+
+```{r}
+
+
+for (lev in levels(df_produccion$material)){
+  df_produccion_fit <- df_produccion[df_produccion$material == lev,]
+  fit1 <- lm(cantidad~., data=df_produccion) # la variable objetivo contra todas, modelo máximo
+  fit0 <- lm(cantidad~1, data=df_produccion) # la variable objetivo contra si misma, modelo mínimo
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n Begin of material ", lev, "\n"))
+  
+  step_prod <- stepAIC(fit0,direction="both",scope=list(upper=fit1,lower=fit0))
+  
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\nAnova de produccion para el material: ", lev))
+  print(anova(step_prod))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\nSumario de produccion para el material: ", lev))
+  print(summary(step_prod))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n End of material ", lev))
+  writeLines(paste("\n---------------------------------------"))
+}
+
+
+```
+
+```{r}
+for (lev in levels(df_compras$material)){
+  df_compras_fit <- df_compras[df_compras$material == lev,]
+  fit1 <- lm(precio_tonelada~., data=df_compras) # la variable objetivo contra todas, modelo máximo
+  fit0 <- lm(precio_tonelada~1, data=df_compras) # la variable objetivo contra si misma, modelo mínimo
+  
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n Begin of material ", lev, "\n"))
+  
+  step_compras <- stepAIC(fit0,direction="both",scope=list(upper=fit1,lower=fit0))
+  
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\nAnova de compras para el material: ", lev))
+  print(anova(step_compras))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\nSumario de compras para el material: ", lev))
+  print(summary(step_compras))
+  writeLines(paste("\n---------------------------------------"))
+  writeLines(paste("\n End of material ", lev))
+  writeLines(paste("\n---------------------------------------"))
+}
+
+
+```

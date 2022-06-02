@@ -1,0 +1,245 @@
+---
+title: "Series temporales de datos de fabricación"
+author: "Jorge Custodio"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+```{r setup, include=FALSE}
+options(warn=-1, showWarnCalls = FALSE)
+
+```
+
+
+
+```{r}
+library("ggplot2")
+library("forecast")
+library("dplyr")
+library("jsonlite")
+library("tidyverse")
+library("corrplot")
+library("fastDummies")
+library("glmnet")
+library("MASS")
+
+
+```
+
+
+```{r}
+
+df_produccion <- read.csv("data/produccion.csv")
+df_compras <- read.csv("data/compras.csv")
+
+str(df_produccion)
+str(df_compras)
+```
+
+comprobación de compras
+
+```{r}
+
+df_produccion$fecha_pedido <- as.Date(df_produccion$fecha_pedido, format = "%Y-%m-%d")
+df_produccion$material <- as.factor(df_produccion$material)
+
+df_compras$fecha_precio <- as.Date(df_compras$fecha_precio, format = "%Y-%m-%d")
+df_compras$material <- as.factor(df_compras$material)
+
+```
+
+Comenzamos con los modelos lineales
+
+```{r, plotly=TRUE, warning=FALSE}
+
+library(modeltime)
+library(tidymodels)
+library(tidyverse)
+library(timetk)
+library(lubridate)
+library(caret)
+library(plotly)
+
+for (lev in levels(df_produccion$material)){
+  title_p = paste("Cantidad de material:", lev, "por fecha")
+  plt <- df_produccion[df_produccion$material==lev,] %>% plot_time_series(fecha_pedido, cantidad, .title = title_p)
+  print(plt)
+}
+```
+
+
+
+
+
+```{r, plotly=TRUE, warning=FALSE}
+
+
+pred_list_prod <- htmltools::tagList()
+test_list_prod <- htmltools::tagList()
+for (lev in levels(df_produccion$material)){
+  df_produccion_train <-df_produccion[df_produccion$material==lev,]
+  if(dim(df_produccion_train)[1] != 0 & nrow(df_produccion_train) >=9){
+    splits <- time_series_split(
+    data = df_produccion_train,
+    assess = "1 month",
+    cumulative = TRUE)
+    
+    splits %>%
+      tk_time_series_cv_plan() %>%
+      plot_time_series_cv_plan(fecha_pedido, cantidad)
+    
+    
+    
+    # model prophet
+    model_prophet <- prophet_reg(
+      seasonality_daily = TRUE) %>%
+      set_engine("prophet") %>%
+      fit(cantidad ~ material + fecha_pedido, training(splits))
+    
+    
+    model_prophet
+    
+    
+    # machine learning - GLM
+    model_glmnet <- linear_reg(penalty = 0.01) %>%
+      set_engine("glmnet") %>%
+      fit(
+        cantidad ~ wday(fecha_pedido, label=TRUE)
+                        + month(fecha_pedido, label=TRUE)
+                        + as.numeric(fecha_pedido),
+        training(splits)
+      )
+    
+    model_glmnet
+    
+    
+    # modeltime compare
+    model_tbl <- modeltime_table(
+      model_prophet,
+      model_glmnet
+    )
+    
+    # calibrate
+    calib_tbl <- model_tbl %>%
+      modeltime_calibrate(testing(splits))
+    
+    # Accuracy
+    calib_tbl %>% modeltime_accuracy()
+    
+    title <- paste("Predicción de cantidad para el material:",lev, sep=" ")
+    title_test <- paste("Visualizacion de test para el material:",lev, sep=" ")
+    # Test Set Visualization
+    test_list_prod[[lev]] <- calib_tbl %>%
+      modeltime_forecast(
+        new_data = testing(splits),
+        actual_data = df_produccion_train) %>%
+      plot_modeltime_forecast(.title = title_test, .interactive = TRUE)
+    print(test_list_prod[[lev]])
+    
+    # Forecast Future
+    future_forecast_tbl <- calib_tbl %>%
+      modeltime_refit(df_produccion_train) %>%
+      modeltime_forecast(
+        actual_data = df_produccion_train
+      )
+    
+    
+    pred_list_prod[[lev]] <- future_forecast_tbl %>%
+    plot_modeltime_forecast(.title = title, .interactive = TRUE)
+    print(pred_list_prod[[lev]])
+    
+  }  
+}
+htmltools::tagList(pred_list_prod)
+htmltools::tagList(test_list_prod)
+```
+
+```{r, plotly=TRUE, warning=FALSE}
+
+
+
+df_compras %>% plot_time_series(fecha_precio, precio_tonelada)
+
+pred_list_compras <- htmltools::tagList()
+test_list_compras <- htmltools::tagList()
+for (lev in levels(df_compras$material)){
+  df_compras_train <-df_compras[df_compras$material==lev,]
+  if(dim(df_compras_train)[1] != 0){
+    splits <- time_series_split(
+    data = df_compras_train,
+    assess = "1 month",
+    cumulative = TRUE)
+    
+    splits %>%
+      tk_time_series_cv_plan() %>%
+      plot_time_series_cv_plan(fecha_precio, precio_tonelada)
+    
+    
+    
+    # model prophet
+    model_prophet <- prophet_reg(
+      seasonality_daily = TRUE) %>%
+      set_engine("prophet") %>%
+      fit(precio_tonelada ~ fecha_precio, training(splits))
+    
+    
+    model_prophet
+    
+    
+    # machine learning - GLM
+    model_glmnet <- linear_reg(penalty = 0.01) %>%
+      set_engine("glmnet") %>%
+      fit(
+        precio_tonelada ~ wday(fecha_precio, label=TRUE)
+                        + month(fecha_precio, label=TRUE)
+                        + as.numeric(fecha_precio),
+        training(splits)
+      )
+    
+    model_glmnet
+    
+    
+    # modeltime compare
+    model_tbl <- modeltime_table(
+      model_prophet,
+      model_glmnet
+    )
+    
+    # calibrate
+    calib_tbl <- model_tbl %>%
+      modeltime_calibrate(testing(splits))
+    
+    # Accuracy
+    calib_tbl %>% modeltime_accuracy()
+    title <- paste("Predicción de precio para el material:",lev, sep=" ")
+    
+    # Test Set Visualization
+    test_list_compras[[lev]] <- calib_tbl %>%
+      modeltime_forecast(
+        new_data = testing(splits),
+        actual_data = df_compras_train) %>%
+      plot_modeltime_forecast(.title = title, .interactive = TRUE
+      )
+    
+    
+    # Forecast Future
+    future_forecast_tbl <- calib_tbl %>%
+      modeltime_refit(df_compras_train) %>%
+      modeltime_forecast(
+        actual_data = df_compras_train
+      )
+    
+    
+    pred_list_compras[[lev]] <- future_forecast_tbl %>%
+    plot_modeltime_forecast(.title = title, .interactive = TRUE)
+    print(pred_list_compras[[lev]])
+    
+  }
+}
+htmltools::tagList(pred_list_compras)
+htmltools::tagList(test_list_compras)
+
+```
+

@@ -1,0 +1,151 @@
+---
+title: "Analisis exploratorio de datos de fabricación"
+author: "Jorge Custodio"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library("ggplot2")
+library("jsonlite")
+library("dplyr")
+library("tidyverse")
+
+pedidos <- read.csv("data/pedidos.csv", sep = ",")
+materiales <- read.csv("data/materiales.csv", sep = ",")
+almacen <- read.csv("data/almacen.csv", sep = ",")
+recetas <- as.data.frame(unnest(fromJSON("data/recetas.json"), cols = c(materiales, cantidades)))
+
+```
+
+Primero reviso las cabeceras
+
+```{r}
+# cabecera de datos de pedidos
+head(pedidos)
+# cabecera de datos de materiales
+head(materiales)
+# cabecera de datos de recetas
+head(recetas)
+# cabecera de datos de almacen
+head(almacen)
+```
+
+Después la estructura de los datos
+
+```{r}
+# estructura de datos de pedidos
+writeLines("Pedidos\n")
+str(pedidos)
+# estructura de datos de materiales
+writeLines("\nMateriales\n")
+str(materiales)
+# estructura de datos de recetas
+writeLines("\nRecetas\n")
+str(recetas)
+# estructura de datos de almacen
+writeLines("\nAlmacen\n")
+str(almacen)
+```
+
+Las dimensiones
+
+```{r}
+# dimensiones de datos de pedidos
+writeLines("Pedidos\n")
+dim(pedidos)
+# dimensiones de datos de materiales
+writeLines("\nMateriales\n")
+dim(materiales)
+# dimensiones de datos de recetas
+writeLines("\nRecetas\n")
+dim(recetas)
+# dimensiones de datos de almacen
+writeLines("\nAlmacen\n")
+dim(almacen)
+```
+
+Y por último el sumario
+
+```{r}
+# sumario de datos de pedidos
+writeLines("Pedidos\n")
+summary(pedidos)
+writeLines("\n------------------------------------------------------\n")
+# sumario de datos de materiales
+writeLines("\nMateriales\n")
+summary(materiales)
+writeLines("\n------------------------------------------------------\n")
+# sumario de datos de recetas
+writeLines("\nRecetas\n")
+summary(recetas)
+writeLines("\n------------------------------------------------------\n")
+# sumario de datos de almacen
+writeLines("\nAlmacen\n")
+summary(almacen)
+```
+
+```{r}
+
+ggplot(materiales, aes(precio_tonelada))+
+  geom_histogram(fill="lightblue")+
+  geom_freqpoly(color = "darkgreen")+
+  ggtitle("Precio de la tonelada")
+ggplot(pedidos, aes(cantidad))+
+  geom_histogram(fill="lightblue")+
+  geom_freqpoly(color = "darkgreen")+
+  ggtitle("Cantidad de materiales")
+
+ggplot(recetas[recetas$cantidades>400,], aes(cantidades, fill=id_receta))+
+  geom_boxplot()+
+  ggtitle("Proporción de grandes cantidades por receta")
+
+ggplot(recetas[recetas$cantidades<=400 & recetas$cantidades > 100,], aes(cantidades, fill=id_receta))+
+  geom_boxplot()+
+  ggtitle("Proporción cantidades intermedias por receta")
+
+
+ggplot(recetas[recetas$cantidades<= 100,], aes(cantidades, fill=id_receta))+
+  geom_boxplot()+
+  ggtitle("Proporción de pequeñas cantidades por receta")
+
+# elimino los outlier para tener un gráfico más limpio
+materiales %>% dplyr::filter(precio_tonelada<1000)%>%
+ggplot(aes(fecha_precio, precio_tonelada))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("Precio de la tonelada por fecha")
+  
+```
+
+Con todos estos datos podemos aclarar ciertas transformaciones antes de trabajar con los datos. Queremos los datos para producción, y para compras. Por lo que necesitaremos:
+
+    - Datos sin precio para la predicción de producción.
+    - Datos con precio para la predicción de compras
+    - Hay que eliminar los materiales con un precio outlier, ya que su uso en las recetas es mínimo y suele       hacerse una compra anual ya prevista.
+
+Entonces
+
+1- Necesitamos integrar los 3 CSV en 2 dataframes
+
+A - El primero deberá integrar los pedidos con las recetas y almacen, transformando el id_receta en la receta en sí y multiplicando la cantidad por sus proporciones. De forma que tengamos estas columnas:
+
+      - material
+      - cantidad 
+      - fecha_pedido
+      - exceso_pcg
+      
+
+B - El segundo deberá integrar las recetas y los materiales. De forma que tengamos estas columnas
+
+      - material
+      - cantidades
+      - fecha_precio
+      - precio_tonelada
+      - importe (calculada de cantidad*precio de material)
+
+Las columnas target son:
+
+      - De producción, la columna cantidad 
+      - De compras, la columna precio 
