@@ -2,4 +2,4 @@
 * text=auto
 * linguist-vendored
 *.html linguist-vendored=false
-*.rmd linguist-vendored=true
+*.Rmd linguist-vendored=true
